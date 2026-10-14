@@ -1,0 +1,25 @@
+# Builds the release firmware on every push and pull request, so a broken
+# configuration is noticed before a release is made.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build firmware
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build sensair.yaml
+        uses: esphome/build-action@v8.1.0
+        with:
+          yaml-file: sensair.yaml
+          # Keep in sync with release.yml and the local ESPHome install
+          version: 2026.9.1

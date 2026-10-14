@@ -1,0 +1,103 @@
+# Publishing a GitHub release builds the firmware, attaches it to the release and
+# deploys the browser installer (static/index.html + firmware) to GitHub Pages.
+#
+# Release checklist:
+#   1. Set the new version in sensair.yaml (esphome > project > version), commit, push.
+#   2. Create a release on GitHub with the tag v<version>, e.g. v0.2.0.
+#      The release notes become the update summary shown in Home Assistant.
+# One-time setup: Settings > Pages > Source: "GitHub Actions".
+name: Release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+# Never run two Pages deployments at the same time
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  # Keep in sync with ci.yml and the local ESPHome install
+  ESPHOME_VERSION: 2026.9.1
+
+jobs:
+  build:
+    name: Build firmware and installer site
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build sensair.yaml
+        id: esphome
+        uses: esphome/build-action@v8.1.0
+        with:
+          yaml-file: sensair.yaml
+          version: ${{ env.ESPHOME_VERSION }}
+          complete-manifest: true
+          release-summary: ${{ github.event.release.body }}
+          release-url: ${{ github.event.release.html_url }}
+
+      - name: Check that the release tag matches the firmware version
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          VERSION: ${{ steps.esphome.outputs.project-version }}
+        run: |
+          if [ "${TAG#v}" != "$VERSION" ]; then
+            echo "::error::Release tag $TAG does not match the version $VERSION in sensair.yaml"
+            exit 1
+          fi
+
+      - name: Assemble the installer site
+        env:
+          NAME: ${{ steps.esphome.outputs.name }}
+        run: |
+          mkdir -p site/firmware
+          cp static/* site/
+          cp "$NAME/$NAME.factory.bin" "$NAME/$NAME.ota.bin" site/firmware/
+          # Show "Sensair" instead of the project ID in the installer dialog, and offer
+          # to erase the flash on a new install (clears old WiFi and API key)
+          jq '.name = "Sensair" | .new_install_prompt_erase = true' "$NAME/manifest.json" > site/firmware/manifest.json
+          cat site/firmware/manifest.json
+
+      - name: Package the Windows installer
+        run: |
+          # Point the script at this repository's GitHub Pages manifest
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          url="https://$owner.github.io/${GITHUB_REPOSITORY#*/}/firmware/manifest.json"
+          mkdir -p dist/sensair-installer-windows
+          cp installer/windows/* dist/sensair-installer-windows/
+          sed -i -E "s#https://[^/']+\.github\.io/[^/']+/firmware/manifest\.json#$url#" \
+            dist/sensair-installer-windows/install-sensair.ps1
+          grep -q "$url" dist/sensair-installer-windows/install-sensair.ps1
+          (cd dist && zip -r sensair-installer-windows.zip sensair-installer-windows)
+          cp dist/sensair-installer-windows.zip site/
+
+      - name: Attach firmware and Windows installer to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+          NAME: ${{ steps.esphome.outputs.name }}
+        run: |
+          gh release upload "$TAG" "$NAME/$NAME.factory.bin" "$NAME/$NAME.ota.bin" \
+            dist/sensair-installer-windows.zip --repo "$GITHUB_REPOSITORY" --clobber
+
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: site
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

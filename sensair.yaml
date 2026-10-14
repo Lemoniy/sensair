@@ -1,0 +1,384 @@
+# Sensair: bedroom air quality sensor (ESPHome, ESP32-C3 SuperMini, board HW-466AB)
+# Sensors: SCD41 (CO2), SHT41 (temperature/humidity), SGP41 (VOC/NOx), SSD1306 OLED
+#
+# This is the release firmware: it contains no secrets. WiFi credentials and the
+# API encryption key are set up on the device after flashing:
+#   - WiFi: in the browser installer (Improv Serial), via Bluetooth (Improv BLE,
+#     e.g. from the Home Assistant app) or via the "Sensair Setup" hotspot.
+#   - API key: Home Assistant sends a key when the device is added, the device
+#     stores it and only accepts encrypted connections from then on.
+# Setup is only possible within 15 minutes after power-up (see provisioning: below).
+# For a local build with your own secrets use sensair-dev.yaml.
+
+substitutions:
+  name: sensair
+  friendly_name: Sensair
+  # Defaults for the settings that can be changed in Home Assistant later
+  default_altitude: "0"
+  default_night_start: "23"
+  default_night_end: "7"
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  # Every device gets a unique name like sensair-a1b2c3, so several can coexist
+  name_add_mac_suffix: true
+  project:
+    name: sensair.air-sensor
+    version: "0.1.0"
+
+# Lets ESPHome Builder users "take control" of the device and get a small config
+# that pulls this file from GitHub.
+dashboard_import:
+  package_import_url: github://Lemoniy/sensair/sensair.yaml@main
+  import_full_config: false
+
+esp32:
+  board: esp32-c3-devkitm-1
+  framework:
+    type: esp-idf
+
+# Improv Serial needs the logger on the USB port (default on the ESP32-C3)
+logger:
+
+api:
+  # No key here: Home Assistant provisions one on the first connection
+  encryption: {}
+
+ota:
+  # Once the API key is provisioned it also authenticates OTA uploads
+  - platform: esphome
+
+wifi:
+  # No credentials here: they are set via Improv or the captive portal
+  # The SuperMini has a weak antenna on some batches. Enable if the connection is unstable:
+  # output_power: 8.5dB
+  ap:
+    ssid: "Sensair Setup"
+
+captive_portal:
+
+improv_serial:
+
+esp32_improv:
+  # No button on the device, so no physical confirmation is required.
+  # The provisioning window below limits when this is possible.
+  authorizer: none
+
+# Setup window: the hotspot, Improv and the keyless API are only open for
+# 15 minutes after power-up. To set the device up later, unplug it briefly.
+provisioning:
+  timeout: 15min
+
+time:
+  - platform: homeassistant
+    id: ha_time
+
+# GPIO2, 8 and 9 are strapping pins and stay unused (GPIO8 drives the onboard blue LED, which is left off).
+i2c:
+  sda: GPIO6
+  scl: GPIO7
+  scan: true
+  frequency: 100kHz
+
+sensor:
+  # --- CO2 (SCD41) ---
+  - platform: scd4x
+    id: scd41
+    co2:
+      name: "CO2"
+      id: co2
+    # The SCD41's own temperature/humidity values are skewed by self-heating,
+    # so the SHT41 is used for those instead.
+    temperature:
+      name: "SCD41 Temperature"
+      internal: true
+    humidity:
+      name: "SCD41 Humidity"
+      internal: true
+    # Pressure derived from the "Altitude" setting (see ambient_pressure below)
+    ambient_pressure_compensation_source: ambient_pressure
+    automatic_self_calibration: true
+    # SCD41 only: less self-heating. Fails on an SCD40 (useful as an authenticity test).
+    measurement_mode: low_power_periodic
+    update_interval: 30s
+
+  # --- Temperature / humidity (SHT41) ---
+  - platform: sht4x
+    address: 0x44
+    temperature:
+      name: "Temperature"
+      id: temp
+      # "Temperature Offset" setting, determined with a reference thermometer
+      filters:
+        - lambda: return x + id(temp_offset).state;
+    humidity:
+      name: "Humidity"
+      id: hum
+      # Corrects the relative humidity for the temperature offset, so the absolute
+      # humidity stays the same: rH * es(T_raw) / es(T_corrected) (Magnus formula).
+      # The SHT41 publishes temperature first, so the raw state is from the same reading.
+      filters:
+        - lambda: |-
+            float offset = id(temp_offset).state;
+            float t_raw = id(temp).get_raw_state();
+            if (offset == 0.0f || std::isnan(offset) || std::isnan(t_raw)) return x;
+            const float a = 17.62f, b = 243.12f;
+            float t = t_raw + offset;
+            float rh = x * expf(a * t_raw / (b + t_raw)) / expf(a * t / (b + t));
+            return std::min(std::max(rh, 0.0f), 100.0f);
+    update_interval: 30s
+
+  # --- ambient pressure for the SCD41, from the altitude (barometric formula) ---
+  - platform: template
+    id: ambient_pressure
+    internal: true
+    unit_of_measurement: "hPa"
+    update_interval: 60s
+    lambda: |-
+      return 1013.25f * powf(1.0f - 2.25577e-5f * id(altitude).state, 5.25588f);
+
+  # --- VOC / NOx (SGP41) ---
+  - platform: sgp4x
+    voc_index:
+      name: "VOC Index"
+      id: voc
+      filters:
+        - sliding_window_moving_average:
+            window_size: 30
+            send_every: 30
+    nox_index:
+      name: "NOx Index"
+      filters:
+        - sliding_window_moving_average:
+            window_size: 30
+            send_every: 30
+    compensation:
+      humidity_source: hum
+      temperature_source: temp
+
+  # --- calculated values ---
+  - platform: template
+    name: "Dew Point"
+    id: dew_point
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    accuracy_decimals: 1
+    update_interval: 30s
+    lambda: |-
+      if (!id(temp).has_state() || !id(hum).has_state()) return {};
+      const float a = 17.62f, b = 243.12f;
+      float rh = id(hum).state;
+      if (rh <= 0.0f) return {};
+      float g = logf(rh / 100.0f) + (a * id(temp).state) / (b + id(temp).state);
+      return (b * g) / (a - g);
+
+  - platform: absolute_humidity
+    name: "Absolute Humidity"
+    temperature: temp
+    humidity: hum
+    equation: Wobus
+
+  # --- anomaly detection: change over the last 10 minutes (21 samples, 30 s apart) ---
+  # Positive = rising. The home assistant automations trigger on these sensors.
+  - platform: template
+    name: "CO2 Change 10 min"
+    id: co2_change
+    unit_of_measurement: "ppm"
+    state_class: measurement
+    accuracy_decimals: 0
+    update_interval: 30s
+    lambda: |-
+      static std::vector<float> hist;
+      if (!id(co2).has_state()) return {};
+      hist.push_back(id(co2).state);
+      if (hist.size() > 21) hist.erase(hist.begin());
+      if (hist.size() < 21) return {};
+      return hist.back() - hist.front();
+
+  - platform: template
+    name: "Humidity Change 10 min"
+    id: hum_change
+    unit_of_measurement: "%"
+    state_class: measurement
+    accuracy_decimals: 1
+    update_interval: 30s
+    lambda: |-
+      static std::vector<float> hist;
+      if (!id(hum).has_state()) return {};
+      hist.push_back(id(hum).state);
+      if (hist.size() > 21) hist.erase(hist.begin());
+      if (hist.size() < 21) return {};
+      return hist.back() - hist.front();
+
+  - platform: template
+    name: "VOC Change 10 min"
+    id: voc_change
+    state_class: measurement
+    accuracy_decimals: 0
+    update_interval: 30s
+    lambda: |-
+      static std::vector<float> hist;
+      if (!id(voc).has_state()) return {};
+      hist.push_back(id(voc).state);
+      if (hist.size() > 21) hist.erase(hist.begin());
+      if (hist.size() < 21) return {};
+      return hist.back() - hist.front();
+
+  - platform: wifi_signal
+    name: "WiFi Signal"
+    update_interval: 120s
+    entity_category: diagnostic
+
+# Settings, adjustable in Home Assistant on the device page under "Configuration".
+# The values are stored on the device and survive restarts and updates.
+number:
+  - platform: template
+    id: altitude
+    name: "Altitude"
+    icon: mdi:image-filter-hdr
+    entity_category: config
+    unit_of_measurement: "m"
+    mode: box
+    min_value: -100
+    max_value: 3000
+    step: 1
+    initial_value: ${default_altitude}
+    restore_value: true
+    optimistic: true
+
+  - platform: template
+    id: temp_offset
+    name: "Temperature Offset"
+    icon: mdi:thermometer-lines
+    entity_category: config
+    unit_of_measurement: "°C"
+    mode: box
+    min_value: -10
+    max_value: 10
+    step: 0.1
+    initial_value: 0
+    restore_value: true
+    optimistic: true
+
+  # The display is off from "Display Off From" to "Display Off Until" (full hours).
+  # Set both to the same value to keep the display on all the time.
+  - platform: template
+    id: night_start
+    name: "Display Off From"
+    icon: mdi:weather-night
+    entity_category: config
+    unit_of_measurement: "h"
+    mode: box
+    min_value: 0
+    max_value: 23
+    step: 1
+    initial_value: ${default_night_start}
+    restore_value: true
+    optimistic: true
+
+  - platform: template
+    id: night_end
+    name: "Display Off Until"
+    icon: mdi:weather-sunny
+    entity_category: config
+    unit_of_measurement: "h"
+    mode: box
+    min_value: 0
+    max_value: 23
+    step: 1
+    initial_value: ${default_night_end}
+    restore_value: true
+    optimistic: true
+
+# Forced calibration: leave the sensor outdoors or at a wide open window for at least
+# 5 minutes, then press the button. Only needed if automatic self-calibration is disabled.
+button:
+  - platform: template
+    name: "CO2 Calibration 420 ppm"
+    entity_category: config
+    on_press:
+      - scd4x.perform_forced_calibration:
+          id: scd41
+          value: 420
+
+  - platform: restart
+    name: "Restart"
+    entity_category: config
+
+binary_sensor:
+  # Night mode: true between "Display Off From" and "Display Off Until". While the time is
+  # still unknown (e.g. Home Assistant not connected yet) it is false, so the WiFi status
+  # icon stays visible.
+  - platform: template
+    id: night_mode
+    internal: true
+    lambda: |-
+      auto now = id(ha_time).now();
+      if (!now.is_valid()) return false;
+      int start = (int) id(night_start).state;
+      int end = (int) id(night_end).state;
+      if (start == end) return false;
+      if (start < end) return now.hour >= start && now.hour < end;
+      return now.hour >= start || now.hour < end;
+
+# The font is downloaded from Google Fonts on the first compile (internet required).
+font:
+  - file: "gfonts://Roboto"
+    id: font_big
+    size: 28
+  - file: "gfonts://Roboto"
+    id: font_small
+    size: 14
+
+# Status icons (Material Design Icons, downloaded on the first compile, internet required).
+# wifi = WiFi and Home Assistant connected, wifi-alert = WiFi only, wifi-off = no WiFi.
+image:
+  - platform: file
+    file: mdi:wifi
+    id: icon_wifi_ok
+    resize: 14x14
+    type: BINARY
+  - platform: file
+    file: mdi:wifi-alert
+    id: icon_wifi_no_ha
+    resize: 14x14
+    type: BINARY
+  - platform: file
+    file: mdi:wifi-off
+    id: icon_wifi_off
+    resize: 14x14
+    type: BINARY
+
+display:
+  - platform: ssd1306_i2c
+    model: "SSD1306 128x64"
+    address: 0x3C
+    id: oled
+    update_interval: 5s
+    lambda: |-
+      if (id(night_mode).state) {
+        it.fill(COLOR_OFF);
+        return;
+      }
+      // connection status icon, top right
+      if (!wifi::global_wifi_component->is_connected()) {
+        it.image(114, 0, id(icon_wifi_off));
+      } else if (!api::global_api_server->is_connected()) {
+        it.image(114, 0, id(icon_wifi_no_ha));
+      } else {
+        it.image(114, 0, id(icon_wifi_ok));
+      }
+      if (id(co2).has_state()) {
+        it.printf(0, 0, id(font_big), "%.0f", id(co2).state);
+        it.print(68, 14, id(font_small), "ppm CO2");
+      } else {
+        it.print(0, 0, id(font_small), "CO2 ...");
+      }
+      if (id(temp).has_state() && id(hum).has_state()) {
+        it.printf(0, 34, id(font_small), "%.1fC   %.0f%% rH", id(temp).state, id(hum).state);
+      }
+      if (id(dew_point).has_state() && id(voc).has_state()) {
+        it.printf(0, 49, id(font_small), "Dew %.1fC  VOC %.0f", id(dew_point).state, id(voc).state);
+      }

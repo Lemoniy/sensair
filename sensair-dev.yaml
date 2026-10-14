@@ -1,0 +1,35 @@
+# Sensair for local development: the release firmware (sensair.yaml) plus your own
+# secrets, so the device connects without any setup step.
+# Copy secrets.example.yaml to secrets.yaml and fill in your values.
+# This is the same structure the ESPHome Builder creates when a user takes control
+# of a release device, except that it includes the local file instead of GitHub.
+
+substitutions:
+  default_altitude: "53"
+
+packages:
+  sensair: !include sensair.yaml
+
+esphome:
+  # Keep the plain name "sensair", so the entity IDs stay sensor.sensair_*
+  name_add_mac_suffix: false
+
+dashboard_import: !remove
+
+api:
+  encryption:
+    key: !secret api_key
+
+ota:
+  - platform: esphome
+    # Uploads are encrypted and authenticated with the api encryption key
+    encryption: {}
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    password: !secret fallback_password
+
+# The credentials are built in, so no setup window is needed
+provisioning: !remove

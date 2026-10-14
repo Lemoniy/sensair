@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sensair Installer</title>
+  <meta name="description" content="Install the Sensair firmware from your browser and connect the sensor to your WiFi and Home Assistant.">
+  <script type="module" src="https://unpkg.com/esp-web-tools@10.4.0/dist/web/install-button.js?module"></script>
+  <style>
+    :root {
+      --bg: #f6f7f9;
+      --surface: #ffffff;
+      --text: #1d2329;
+      --muted: #5b6670;
+      --border: #dfe3e8;
+      --accent: #0b7a75;
+      --accent-text: #ffffff;
+      --note-bg: #fff6e0;
+      --note-border: #f0c75e;
+      color-scheme: light;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #14181c;
+        --surface: #1d2328;
+        --text: #e6eaee;
+        --muted: #9aa5af;
+        --border: #2f373e;
+        --accent: #3fb8b0;
+        --accent-text: #0d1a19;
+        --note-bg: #2d2717;
+        --note-border: #8a6d1f;
+        color-scheme: dark;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    }
+    main { max-width: 680px; margin: 0 auto; padding: 40px 16px 64px; }
+    h1 { font-size: 2rem; margin: 0 0 4px; }
+    h2 { font-size: 1.15rem; margin: 32px 0 12px; }
+    p { margin: 0 0 12px; }
+    .lead { color: var(--muted); margin-bottom: 24px; }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+    }
+    .install { text-align: center; }
+    .version { color: var(--muted); font-size: 0.9rem; margin-top: 12px; }
+    .button {
+      display: inline-block;
+      background: var(--accent);
+      color: var(--accent-text);
+      border: 0;
+      border-radius: 8px;
+      padding: 12px 28px;
+      font: inherit;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .button:hover { filter: brightness(1.08); }
+    .note {
+      background: var(--note-bg);
+      border: 1px solid var(--note-border);
+      border-radius: 8px;
+      padding: 12px 16px;
+      text-align: left;
+    }
+    ol, ul { padding-left: 1.3em; margin: 0; }
+    li { margin-bottom: 8px; }
+    li:last-child { margin-bottom: 0; }
+    code {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 1px 5px;
+      font-size: 0.92em;
+    }
+    details { border-top: 1px solid var(--border); padding: 12px 0; }
+    details:last-child { border-bottom: 1px solid var(--border); }
+    summary { cursor: pointer; font-weight: 600; }
+    details p { margin: 8px 0 0; }
+    footer { color: var(--muted); font-size: 0.9rem; margin-top: 40px; }
+    a { color: var(--accent); }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Sensair</h1>
+    <p class="lead">Air quality sensor for CO2, temperature, humidity and VOC. Install the firmware right here in your browser and connect it to your WiFi and Home Assistant.</p>
+
+    <div class="card install">
+      <esp-web-install-button manifest="firmware/manifest.json">
+        <button slot="activate" class="button">Install Sensair</button>
+        <div slot="unsupported" class="note">
+          Your browser cannot talk to USB devices. Please open this page in
+          <strong>Google Chrome</strong> or <strong>Microsoft Edge</strong> on a computer
+          (Windows, macOS or Linux). Phones and tablets are not supported.
+        </div>
+        <div slot="not-allowed" class="note">
+          This page has to be opened over <code>https://</code> to access USB devices.
+        </div>
+      </esp-web-install-button>
+      <p class="version" id="version"></p>
+    </div>
+
+    <h2>What you need</h2>
+    <ul>
+      <li>Your Sensair</li>
+      <li>A USB-C cable that can transfer data (some cables only charge)</li>
+      <li>A computer with Google Chrome or Microsoft Edge</li>
+      <li>The name and password of your WiFi (2.4 GHz)</li>
+    </ul>
+
+    <h2>Step by step</h2>
+    <ol>
+      <li>Connect the Sensair to your computer with the USB cable.</li>
+      <li>Click <strong>Install Sensair</strong> and select the device in the list.
+        It is usually called <code>USB JTAG/serial debug unit</code>.</li>
+      <li>Confirm the installation. This takes about one minute; do not unplug the cable.</li>
+      <li>Enter your WiFi name and password when asked.</li>
+      <li>Open Home Assistant. Under <strong>Settings &gt; Devices &amp; services</strong> the Sensair
+        shows up as a newly discovered device. Click <strong>Add</strong>.
+        Home Assistant then secures the connection automatically.</li>
+      <li>Optional: on the device page under <strong>Configuration</strong>, set your altitude,
+        a temperature offset and the hours when the display turns off at night.</li>
+    </ol>
+    <p style="margin-top:16px">You can now unplug the Sensair from the computer and use any USB power supply.</p>
+
+    <h2>Troubleshooting</h2>
+    <details>
+      <summary>The device does not appear in the list</summary>
+      <p>Try another USB cable, as many cables only charge. If it still does not show up, hold the
+        <strong>BOOT</strong> button on the board while plugging in the cable, then try again.</p>
+    </details>
+    <details>
+      <summary>No Chrome or Edge? Use the Windows installer</summary>
+      <p>Download the <a href="sensair-installer-windows.zip">Windows installer</a>, unzip it and
+        double-click <code>Install-Sensair.cmd</code>. It does the same as this page: it installs
+        the firmware and asks for your WiFi.</p>
+    </details>
+    <details>
+      <summary>Setting up WiFi without a computer</summary>
+      <p>Within 15 minutes after power-up the Sensair opens its own WiFi network
+        <code>Sensair Setup</code>. Connect to it with your phone; a page to enter your WiFi
+        opens automatically (otherwise go to <code>http://192.168.4.1</code>). The Home Assistant
+        app can also set up the WiFi via Bluetooth.</p>
+    </details>
+    <details>
+      <summary>Setup does not work anymore</summary>
+      <p>For security, the setup is only possible within 15 minutes after the Sensair is powered up.
+        Unplug it for a few seconds and plug it back in, then try again.</p>
+    </details>
+    <details>
+      <summary>Home Assistant does not find the Sensair</summary>
+      <p>Make sure the Sensair and Home Assistant are in the same network. You can also add it manually:
+        <strong>Settings &gt; Devices &amp; services &gt; Add integration &gt; ESPHome</strong>.</p>
+    </details>
+
+    <footer>
+      Powered by <a href="https://esphome.io">ESPHome</a> and
+      <a href="https://esphome.github.io/esp-web-tools/">ESP Web Tools</a>.
+    </footer>
+  </main>
+  <script>
+    fetch("firmware/manifest.json")
+      .then((r) => r.json())
+      .then((m) => { document.getElementById("version").textContent = "Firmware version " + m.version; })
+      .catch(() => {});
+  </script>
+</body>
+</html>

@@ -1,0 +1,132 @@
+# Home Assistant automations for Sensair.
+# Add via Settings > Automations > three-dot menu > Edit in YAML, or paste into automations.yaml.
+# Replace notify.mobile_app_YOUR_PHONE with your companion app service
+# (Developer tools > Actions, search for "notify.mobile_app").
+# The entity IDs match sensair-dev.yaml (device name "sensair"). Release devices get a
+# MAC suffix (e.g. sensor.sensair_a1b2c3_co2), so adjust the entity IDs for those.
+
+- id: sensair_co2_ventilate
+  alias: Sensair - CO2 high, ventilate
+  mode: single
+  triggers:
+    - trigger: numeric_state
+      entity_id: sensor.sensair_co2
+      above: 1200
+      for: "00:10:00"
+  conditions:
+    - condition: time
+      after: "07:00:00"
+      before: "23:00:00"
+  actions:
+    - action: notify.mobile_app_YOUR_PHONE
+      data:
+        title: "Bedroom: ventilate"
+        message: "CO2 has been above 1200 ppm for 10 minutes ({{ states('sensor.sensair_co2') }} ppm)."
+
+- id: sensair_humidity_mold_risk
+  alias: Sensair - humidity persistently high
+  mode: single
+  triggers:
+    - trigger: numeric_state
+      entity_id: sensor.sensair_humidity
+      above: 65
+      for: "04:00:00"
+  conditions:
+    - condition: time
+      after: "07:00:00"
+      before: "23:00:00"
+  actions:
+    - action: notify.mobile_app_YOUR_PHONE
+      data:
+        title: "Bedroom: mold risk"
+        message: >-
+          Humidity has been above 65 % for 4 hours ({{ states('sensor.sensair_humidity') }} %,
+          dew point {{ states('sensor.sensair_dew_point') }} °C). Air the room and check
+          exterior walls for condensation.
+
+- id: sensair_voc_high
+  alias: Sensair - VOC index high
+  mode: single
+  triggers:
+    - trigger: numeric_state
+      entity_id: sensor.sensair_voc_index
+      above: 250
+      for: "00:15:00"
+  conditions:
+    - condition: time
+      after: "07:00:00"
+      before: "23:00:00"
+  actions:
+    - action: notify.mobile_app_YOUR_PHONE
+      data:
+        title: "Bedroom: pollutants in the air?"
+        message: >-
+          The VOC index has been above 250 for 15 minutes ({{ states('sensor.sensair_voc_index') }}).
+          This is a relative value: ventilate and look for sources (cleaners, solvents, new furniture).
+
+# --- Anomaly detection: sudden changes within 10 minutes ---
+# These use the "... Change 10 min" sensors calculated on the ESP (see sensair.yaml).
+# After a notification, further alerts of the same automation are suppressed for 30 minutes.
+
+- id: sensair_anomaly_co2_spike
+  alias: Sensair - anomaly, CO2 rising fast
+  mode: single
+  max_exceeded: silent
+  triggers:
+    - trigger: numeric_state
+      entity_id: sensor.sensair_co2_change_10_min
+      above: 300
+  conditions:
+    - condition: time
+      after: "07:00:00"
+      before: "23:00:00"
+  actions:
+    - action: notify.mobile_app_YOUR_PHONE
+      data:
+        title: "Bedroom: unusual CO2 rise"
+        message: >-
+          CO2 rose by {{ states('sensor.sensair_co2_change_10_min') | round(0) }} ppm in 10 minutes
+          (now {{ states('sensor.sensair_co2') }} ppm). Many people, combustion or a closed room?
+    - delay: "00:30:00"
+
+- id: sensair_anomaly_humidity_spike
+  alias: Sensair - anomaly, humidity rising fast
+  mode: single
+  max_exceeded: silent
+  triggers:
+    - trigger: numeric_state
+      entity_id: sensor.sensair_humidity_change_10_min
+      above: 10
+  conditions:
+    - condition: time
+      after: "07:00:00"
+      before: "23:00:00"
+  actions:
+    - action: notify.mobile_app_YOUR_PHONE
+      data:
+        title: "Bedroom: humidity jumped"
+        message: >-
+          Humidity rose by {{ states('sensor.sensair_humidity_change_10_min') | round(1) }} % in 10 minutes
+          (now {{ states('sensor.sensair_humidity') }} %). Drying laundry, shower next door or a leak?
+    - delay: "00:30:00"
+
+- id: sensair_anomaly_voc_spike
+  alias: Sensair - anomaly, VOC rising fast
+  mode: single
+  max_exceeded: silent
+  triggers:
+    - trigger: numeric_state
+      entity_id: sensor.sensair_voc_change_10_min
+      above: 100
+  conditions:
+    - condition: time
+      after: "07:00:00"
+      before: "23:00:00"
+  actions:
+    - action: notify.mobile_app_YOUR_PHONE
+      data:
+        title: "Bedroom: sudden pollutant rise"
+        message: >-
+          The VOC index rose by {{ states('sensor.sensair_voc_change_10_min') | round(0) }} in 10 minutes
+          (now {{ states('sensor.sensair_voc_index') }}). Cleaner, solvent, smoke or something burning?
+    - delay: "00:30:00"
