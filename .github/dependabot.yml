@@ -1,0 +1,17 @@
+# Keeps the GitHub Actions in .github/workflows up to date. They are pinned to commit
+# SHAs; Dependabot updates the SHA and the version comment together in one pull request.
+# Not covered here (update by hand): the ESPHome version in ci.yml/release.yml, esptool
+# in installer/windows/install-sensair.ps1 and esp-web-tools in static/index.html.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    # Only propose versions that have been out for a week, so a compromised release
+    # is usually noticed and withdrawn before it shows up here
+    cooldown:
+      default-days: 7
+    groups:
+      github-actions:
+        patterns: ["*"]

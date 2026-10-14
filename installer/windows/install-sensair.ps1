@@ -5,6 +5,8 @@
 .DESCRIPTION
   Does the same as the browser installer: downloads the firmware, flashes it with
   esptool and sends the WiFi credentials to the device via Improv Serial.
+  Before anything is downloaded, it shows the sources, versions and SHA-256
+  checksums and only continues once the user confirms.
   Start it by double-clicking Install-Sensair.cmd. Works with the PowerShell 5.1
   that comes with Windows; esptool is downloaded once on the first run.
 
@@ -66,12 +68,16 @@ function Write-Step([string]$Text) {
 
 # --- downloads --------------------------------------------------------------
 
+function Get-EsptoolPath {
+  return Join-Path $ToolDir "esptool-$EsptoolVersion\esptool-windows-amd64\esptool.exe"
+}
+
 function Get-Esptool {
-  $dir = Join-Path $ToolDir "esptool-$EsptoolVersion"
-  $exe = Join-Path $dir 'esptool-windows-amd64\esptool.exe'
+  $exe = Get-EsptoolPath
   if (Test-Path $exe) { return $exe }
 
   Write-Step "Downloading esptool $EsptoolVersion (only needed once)"
+  $dir = Join-Path $ToolDir "esptool-$EsptoolVersion"
   New-Item -ItemType Directory -Force -Path $dir | Out-Null
   $zip = Join-Path $dir 'esptool.zip'
   Invoke-WebRequest -Uri $EsptoolUrl -OutFile $zip -UseBasicParsing
@@ -85,26 +91,84 @@ function Get-Esptool {
   return $exe
 }
 
-function Get-FirmwareFile {
+function Get-FirmwareInfo {
+  # Only reads the small manifest (version, download path, checksum). The firmware
+  # itself is downloaded after the user agreed in Confirm-Downloads.
   if ($Firmware) {
     if (-not (Test-Path $Firmware)) { throw "Firmware file not found: $Firmware" }
-    return (Resolve-Path $Firmware).Path
+    $path = (Resolve-Path $Firmware).Path
+    return [pscustomobject]@{
+      Local  = $true
+      Path   = $path
+      Sha256 = (Get-FileHash -Path $path -Algorithm SHA256).Hash.ToLower()
+    }
   }
 
-  Write-Step 'Downloading the latest Sensair firmware'
+  Write-Step 'Checking the latest Sensair release'
   $manifest = Invoke-RestMethod -Uri $ManifestUrl -UseBasicParsing
   if ($manifest -is [string]) { $manifest = $manifest | ConvertFrom-Json }
   $build = $manifest.builds | Where-Object { $_.chipFamily -eq 'ESP32-C3' } | Select-Object -First 1
   if (-not $build) { throw 'The firmware manifest has no build for the ESP32-C3.' }
   $part = $build.parts | Select-Object -First 1
-  $url = (New-Object System.Uri -ArgumentList ([Uri]$ManifestUrl), $part.path).AbsoluteUri
-
-  $file = Join-Path $env:TEMP 'sensair.factory.bin'
-  Invoke-WebRequest -Uri $url -OutFile $file -UseBasicParsing
-  if ($part.sha256 -and (Get-FileHash -Path $file -Algorithm SHA256).Hash -ne $part.sha256) {
-    throw 'The firmware download is damaged (checksum mismatch). Please try again.'
+  return [pscustomobject]@{
+    Local      = $false
+    Name       = $manifest.name
+    Version    = $manifest.version
+    Url        = (New-Object System.Uri -ArgumentList ([Uri]$ManifestUrl), $part.path).AbsoluteUri
+    Sha256     = $part.sha256
+    ReleaseUrl = $build.ota.release_url
+    Summary    = $build.ota.summary
   }
-  Write-Host "Firmware: $($manifest.name) $($manifest.version)"
+}
+
+function Confirm-Downloads($FirmwareInfo, [bool]$NeedEsptool) {
+  # Shows what will be downloaded from where, and only continues if the user agrees
+  Write-Step 'Downloads'
+  Write-Host 'The installer needs to download the following files from GitHub:'
+  if ($NeedEsptool) {
+    Write-Host ''
+    Write-Host "  esptool $EsptoolVersion - flashing tool by Espressif, the maker of the ESP32 chip"
+    Write-Host '    Source:  https://github.com/espressif/esptool'
+    Write-Host "    File:    $EsptoolUrl"
+    Write-Host "    SHA-256: $EsptoolSha256"
+  }
+  if (-not $FirmwareInfo.Local) {
+    Write-Host ''
+    Write-Host "  Firmware $($FirmwareInfo.Name) $($FirmwareInfo.Version)"
+    if ($FirmwareInfo.ReleaseUrl) { Write-Host "    Release: $($FirmwareInfo.ReleaseUrl)" }
+    $notes = @("$($FirmwareInfo.Summary)" -split "`r?`n" | Where-Object { $_.Trim() } | Select-Object -First 3)
+    for ($i = 0; $i -lt $notes.Count; $i++) {
+      $label = if ($i -eq 0) { '    Changes: ' } else { '             ' }
+      Write-Host ($label + $notes[$i].Trim())
+    }
+    Write-Host "    File:    $($FirmwareInfo.Url)"
+    if ($FirmwareInfo.Sha256) {
+      Write-Host "    SHA-256: $($FirmwareInfo.Sha256)"
+    } else {
+      Write-Host '    SHA-256: none provided, the download cannot be checked' -ForegroundColor Yellow
+    }
+  }
+  Write-Host ''
+  Write-Host 'After the download, each file is checked against the SHA-256 checksum shown above.'
+  $answer = Read-Host 'Download these files and continue? [y/N]'
+  if ($answer -notmatch '^(y|yes|j|ja)$') {
+    throw (New-Object System.OperationCanceledException -ArgumentList 'Cancelled. Nothing was downloaded and the device was not changed.')
+  }
+}
+
+function Save-Firmware($FirmwareInfo) {
+  if ($FirmwareInfo.Local) { return $FirmwareInfo.Path }
+
+  Write-Step "Downloading firmware $($FirmwareInfo.Name) $($FirmwareInfo.Version)"
+  $file = Join-Path $env:TEMP 'sensair.factory.bin'
+  Invoke-WebRequest -Uri $FirmwareInfo.Url -OutFile $file -UseBasicParsing
+  if ($FirmwareInfo.Sha256) {
+    if ((Get-FileHash -Path $file -Algorithm SHA256).Hash -ne $FirmwareInfo.Sha256) {
+      Remove-Item $file
+      throw 'The firmware download is damaged (checksum mismatch). Please try again.'
+    }
+    Write-Host 'Checksum verified.'
+  }
   return $file
 }
 
@@ -417,7 +481,9 @@ function Connect-Wifi($Serial) {
       Write-Host 'The Sensair did not report a connection.' -ForegroundColor Yellow
     }
     $again = Read-Host 'Try again? [Y/n]'
-    if ($again -match '^(n|no)$') { throw 'WiFi setup cancelled.' }
+    if ($again -match '^(n|no)$') {
+      throw (New-Object System.OperationCanceledException -ArgumentList 'WiFi setup cancelled. To set it up later, run Install-Sensair.cmd -WifiOnly')
+    }
   }
 }
 
@@ -431,8 +497,17 @@ try {
   Write-Host 'Installs the Sensair firmware on an ESP32-C3 and connects it to your WiFi.'
 
   if (-not $WifiOnly) {
+    $firmwareInfo = Get-FirmwareInfo
+    $needEsptool = -not (Test-Path (Get-EsptoolPath))
+    if ($needEsptool -or -not $firmwareInfo.Local) {
+      Confirm-Downloads $firmwareInfo $needEsptool
+    }
+    if ($firmwareInfo.Local) {
+      Write-Host "Firmware: local file $($firmwareInfo.Path)"
+      Write-Host "SHA-256:  $($firmwareInfo.Sha256)"
+    }
     $script:Esptool = Get-Esptool
-    $firmwareFile = Get-FirmwareFile
+    $firmwareFile = Save-Firmware $firmwareInfo
   }
 
   Write-Step 'Looking for the device'
@@ -473,6 +548,10 @@ try {
   Write-Host 'there as a discovered device; click "Add". Do this within 15 minutes, otherwise'
   Write-Host 'unplug the Sensair for a few seconds and plug it back in.'
   Write-Host 'You can now unplug the Sensair from the computer and use any USB power supply.'
+} catch [System.OperationCanceledException] {
+  Write-Host ''
+  Write-Host $_.Exception.Message -ForegroundColor Yellow
+  $exitCode = 1
 } catch {
   Write-Host ''
   Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red

@@ -17,6 +17,8 @@ substitutions:
   default_altitude: "0"
   default_night_start: "23"
   default_night_end: "7"
+  # Factory reset: how often the device has to be plugged in in a row (see factory_reset:)
+  factory_reset_count: "5"
 
 esphome:
   name: ${name}
@@ -25,7 +27,7 @@ esphome:
   name_add_mac_suffix: true
   project:
     name: sensair.air-sensor
-    version: "0.1.0"
+    version: "0.2.0"
 
 # Lets ESPHome Builder users "take control" of the device and get a small config
 # that pulls this file from GitHub.
@@ -69,6 +71,23 @@ esp32_improv:
 # 15 minutes after power-up. To set the device up later, unplug it briefly.
 provisioning:
   timeout: 15min
+
+# Factory reset without a computer: plug the Sensair in and unplug it again within
+# 10 seconds, factory_reset_count times in a row. This deletes the WiFi settings, the
+# Home Assistant key and all settings; the device then starts in setup mode.
+# Staying powered for 10 seconds resets the count, so normal restarts never trigger it.
+factory_reset:
+  resets_required: ${factory_reset_count}
+  max_delay: 10s
+  on_increment:
+    # x = quick restarts in a row so far (0 again once the device stayed on for 10 s)
+    - lambda: id(quick_restarts) = x;
+    - component.update: oled
+
+globals:
+  - id: quick_restarts
+    type: uint8_t
+    initial_value: "0"
 
 time:
   - platform: homeassistant
@@ -307,6 +326,14 @@ button:
     name: "Restart"
     entity_category: config
 
+  # Same as the factory reset by unplugging (see factory_reset: above), e.g. before
+  # passing the device on. Disabled by default so it cannot be pressed by accident;
+  # enable the entity in Home Assistant first.
+  - platform: factory_reset
+    name: "Factory Reset"
+    entity_category: config
+    disabled_by_default: true
+
 binary_sensor:
   # Night mode: true between "Display Off From" and "Display Off Until". While the time is
   # still unknown (e.g. Home Assistant not connected yet) it is false, so the WiFi status
@@ -358,6 +385,14 @@ display:
     id: oled
     update_interval: 5s
     lambda: |-
+      // Factory reset by unplugging: show the progress from the second quick restart on,
+      // also at night (a single restart is normal and shows nothing)
+      if (id(quick_restarts) >= 2) {
+        it.print(0, 0, id(font_small), "Factory reset");
+        it.printf(0, 16, id(font_big), "%d / ${factory_reset_count}", id(quick_restarts));
+        it.print(0, 48, id(font_small), "Unplug again");
+        return;
+      }
       if (id(night_mode).state) {
         it.fill(COLOR_OFF);
         return;

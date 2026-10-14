@@ -1,5 +1,6 @@
 # Builds the release firmware on every push and pull request, so a broken
-# configuration is noticed before a release is made.
+# configuration is noticed before a release is made. Dependabot's pull requests
+# for action updates are built here too.
 name: CI
 
 on:
@@ -15,10 +16,12 @@ jobs:
     name: Build firmware
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
 
       - name: Build sensair.yaml
-        uses: esphome/build-action@v8.1.0
+        uses: esphome/build-action@ae5408cdbc4f70692bf8e345c4982bca05a93667 # v8.1.0
         with:
           yaml-file: sensair.yaml
           # Keep in sync with release.yml and the local ESPHome install

@@ -5,17 +5,20 @@
 #   1. Set the new version in sensair.yaml (esphome > project > version), commit, push.
 #   2. Create a release on GitHub with the tag v<version>, e.g. v0.2.0.
 #      The release notes become the update summary shown in Home Assistant.
-# One-time setup: Settings > Pages > Source: "GitHub Actions".
+# One-time setup: Settings > Pages > Source: "GitHub Actions", and allow the tag
+# pattern v* under Settings > Environments > github-pages.
+#
+# Security: the build downloads ESPHome and its libraries, so it runs in its own job
+# with read-only access. Only the later jobs, which run no third-party build code, can
+# write to the release, sign the provenance attestations and deploy the page.
+# Actions are pinned to commit SHAs; Dependabot proposes updates (.github/dependabot.yml).
 name: Release
 
 on:
   release:
     types: [published]
 
-permissions:
-  contents: write
-  pages: write
-  id-token: write
+permissions: {}
 
 # Never run two Pages deployments at the same time
 concurrency:
@@ -30,12 +33,16 @@ jobs:
   build:
     name: Build firmware and installer site
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
 
       - name: Build sensair.yaml
         id: esphome
-        uses: esphome/build-action@v8.1.0
+        uses: esphome/build-action@ae5408cdbc4f70692bf8e345c4982bca05a93667 # v8.1.0
         with:
           yaml-file: sensair.yaml
           version: ${{ env.ESPHOME_VERSION }}
@@ -78,26 +85,85 @@ jobs:
           (cd dist && zip -r sensair-installer-windows.zip sensair-installer-windows)
           cp dist/sensair-installer-windows.zip site/
 
-      - name: Attach firmware and Windows installer to the release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.event.release.tag_name }}
-          NAME: ${{ steps.esphome.outputs.name }}
-        run: |
-          gh release upload "$TAG" "$NAME/$NAME.factory.bin" "$NAME/$NAME.ota.bin" \
-            dist/sensair-installer-windows.zip --repo "$GITHUB_REPOSITORY" --clobber
+      - name: Hand the files over to the next jobs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-files
+          path: site/
+          if-no-files-found: error
+          retention-days: 7
 
-      - uses: actions/upload-pages-artifact@v4
+      - uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4.0.0
         with:
           path: site
 
-  deploy:
-    name: Deploy to GitHub Pages
+  publish:
+    name: Attest and attach files to the release
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write     # attach the files and checksums to the release
+      id-token: write     # sign the attestations (Sigstore)
+      attestations: write # store the attestations on GitHub
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-files
+          path: site
+
+      # Signed record that these exact files were built by this workflow from this
+      # commit; anyone can check it with "gh attestation verify <file> --repo <repo>"
+      - name: Attest build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: |
+            site/firmware/*.bin
+            site/sensair-installer-windows.zip
+
+      - name: Attach files and checksums to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          (cd site && sha256sum firmware/*.bin sensair-installer-windows.zip) | sed 's#firmware/##' > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          gh release upload "$TAG" site/firmware/*.bin site/sensair-installer-windows.zip SHA256SUMS.txt \
+            --repo "$GITHUB_REPOSITORY" --clobber
+
+      - name: Add checksums and verification hint to the release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body > notes.md
+          # A re-run must not add the section twice
+          if grep -q '^## Checksums' notes.md; then exit 0; fi
+          {
+            echo
+            echo '## Checksums (SHA-256)'
+            echo
+            echo '```'
+            cat SHA256SUMS.txt
+            echo '```'
+            echo
+            echo "All files were built by this repository's release workflow. To verify a download:"
+            echo
+            echo '```'
+            echo "gh attestation verify <file> --repo $GITHUB_REPOSITORY"
+            echo '```'
+          } >> notes.md
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file notes.md
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5
